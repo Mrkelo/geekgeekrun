@@ -369,6 +369,18 @@ export async function getBossIdsByJobIds (ds: DataSource, jobIds: string[] = [])
   return result
 }
 
+export async function getJobInfoRecord(
+  ds: DataSource,
+  encryptJobId: string
+) {
+  const repo = ds.getRepository(JobInfo)
+  return await repo.findOne({
+    where: {
+      encryptJobId
+    }
+  })
+}
+
 export async function saveJobHireStatusRecord(
   ds: DataSource,
   record: JobHireStatusRecord

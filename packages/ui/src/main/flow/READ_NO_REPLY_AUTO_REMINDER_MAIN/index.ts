@@ -14,7 +14,8 @@ import { ChatMessageRecord } from '@geekgeekrun/sqlite-plugin/dist/entity/ChatMe
 import {
   saveChatMessageRecord,
   getJobHireStatusRecord,
-  saveJobHireStatusRecord
+  saveJobHireStatusRecord,
+  getJobInfoRecord
 } from '@geekgeekrun/sqlite-plugin/dist/handlers'
 import {
   writeStorageFile,
@@ -287,6 +288,19 @@ async function checkJobIsClosed() {
     isJobClosed = true
   }
   return isJobClosed
+}
+
+async function getJobJdByEncryptJobId(encryptJobId?: string | null) {
+  if (!encryptJobId) {
+    return ''
+  }
+  try {
+    const jobInfo = await getJobInfoRecord(await dbInitPromise, encryptJobId)
+    return jobInfo?.description?.trim?.() ?? ''
+  } catch (err) {
+    console.log(`get job JD failed: ${encryptJobId}`, err)
+    return ''
+  }
 }
 
 let browser: null | Browser = null
@@ -599,7 +613,9 @@ const mainLoop = async () => {
     }
     const conversationInfo = await pageMapByName.boss?.evaluate(
       `document.querySelector('.chat-conversation .chat-im.chat-editor')?.__vue__?.conversation$`
-    )
+    ) as { encryptJobId?: string, bothTalked?: boolean } | undefined
+    const currentEncryptJobId =
+      conversationInfo?.encryptJobId ?? friendListData[toCheckItemAtIndex]?.encryptJobId ?? ''
 
     const historyMessageList =
       (
@@ -635,7 +651,9 @@ const mainLoop = async () => {
           gtag('rnrr_llm_content_sent')
         } else {
           try {
-            const textToSend = await getGptContent(messageList)
+            const textToSend = await getGptContent(messageList, {
+              jobJd: await getJobJdByEncryptJobId(currentEncryptJobId)
+            })
             await sendMessage(pageMapByName.boss!, textToSend)
             gtag('rnrr_llm_content_sent')
           } catch (err) {
@@ -649,7 +667,9 @@ const mainLoop = async () => {
       } else {
         if (rechatContentSource === RECHAT_CONTENT_SOURCE.GEMINI_WITH_CHAT_CONTEXT) {
           try {
-            const textToSend = await getGptContent(messageList)
+            const textToSend = await getGptContent(messageList, {
+              jobJd: await getJobJdByEncryptJobId(currentEncryptJobId)
+            })
             await sendMessage(pageMapByName.boss!, textToSend)
             gtag('rnrr_llm_content_sent')
           } catch (err) {

@@ -238,6 +238,8 @@ const constantOpenContent = (() => {
   }
 })()
 const rechatContentSource = Number(searchParams.rechatContentSource)
+const mockJobJd =
+  '岗位职责：负责业务系统前端功能开发、性能优化和用户体验改进；要求熟悉 Vue/React、TypeScript、工程化工具，有复杂业务组件和跨团队协作经验。'
 
 async function sendLlmGeneratedContent() {
   gtagRenderer('click_mock_chat_send')
@@ -248,7 +250,8 @@ async function sendLlmGeneratedContent() {
       try {
         const response = await electron.ipcRenderer.invoke('request-llm-for-test', {
           messageList: [],
-          llmConfigIdForPick: selectedLlmConfig.value ? [selectedLlmConfig.value] : null
+          llmConfigIdForPick: selectedLlmConfig.value ? [selectedLlmConfig.value] : null,
+          jobJd: mockJobJd
         })
         console.log(response)
         messageList.value.push({
@@ -283,7 +286,8 @@ async function sendLlmGeneratedContent() {
       try {
         const response = await electron.ipcRenderer.invoke('request-llm-for-test', {
           messageList: JSON.parse(JSON.stringify((messageList.value ?? []).slice(-8))),
-          llmConfigIdForPick: selectedLlmConfig.value ? [selectedLlmConfig.value] : null
+          llmConfigIdForPick: selectedLlmConfig.value ? [selectedLlmConfig.value] : null,
+          jobJd: mockJobJd
         })
         console.log(response)
         messageList.value.push({

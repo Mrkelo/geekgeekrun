@@ -546,7 +546,17 @@ export default function initIpc() {
       }
     }
   })
-  ipcMain.on('test-llm-config-effect', (_, { autoReminderConfig } = {}) => {
+  ipcMain.on('test-llm-config-effect', async (_, { autoReminderConfig } = {}) => {
+    const bossCookies = readStorageFile('boss-cookies.json')
+    if (!checkCookieListFormat(bossCookies)) {
+      gtag('mock_chat_blocked_for_missing_login')
+      await dialog.showMessageBox({
+        type: 'warning',
+        message: '需要先登录 BOSS 直聘',
+        detail: '模拟已读不回复聊过程需要获取岗位JD，请先登录后再使用。'
+      })
+      return
+    }
     createReadNoReplyReminderLlmMockWindow(
       {
         parent: mainWindow!,
@@ -560,7 +570,8 @@ export default function initIpc() {
     async function requestLlm(_, requestPayload) {
       return await requestNewMessageContent(requestPayload.messageList, {
         requestScene: RequestSceneEnum.testing,
-        llmConfigIdForPick: requestPayload.llmConfigIdForPick ?? null
+        llmConfigIdForPick: requestPayload.llmConfigIdForPick ?? null,
+        jobJd: requestPayload.jobJd ?? ''
       })
     }
     ipcMain.handle('request-llm-for-test', requestLlm)

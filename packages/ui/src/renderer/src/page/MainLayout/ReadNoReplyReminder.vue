@@ -117,6 +117,7 @@
                     </div>
                     <div class="font-size-12px color-#666">
                       对生成效果不够满意？可在此查看、编辑“开场白话术”提示词模板。
+                      模板中可使用 __REPLACE_REAL_JOB_JD_HERE__ 插入当前岗位JD。
                     </div>
                   </div>
                 </el-form-item>
@@ -183,7 +184,8 @@
                       </div>
                       <div class="font-size-12px color-#666">
                         对生成效果不够满意？可在此查看、编辑“跟进话术”提示词模板。请在模板中需要插入简历的位置插入
-                        __REPLACE_REAL_RESUME_HERE__
+                        __REPLACE_REAL_RESUME_HERE__，也可使用 __REPLACE_REAL_JOB_JD_HERE__
+                        插入当前岗位JD。
                       </div>
                     </div>
                   </el-form-item>
@@ -745,6 +747,42 @@ const handleClickEditPrompt = async ({ type }) => {
   await electron.ipcRenderer.send('no-reply-reminder-prompt-edit', { type })
 }
 
+async function ensureBossLoginForMock() {
+  if (await electron.ipcRenderer.invoke('check-boss-zhipin-cookie-file')) {
+    return true
+  }
+  gtagRenderer('mock_chat_need_login_dialog_show')
+  try {
+    await ElMessageBox.confirm(
+      '模拟已读不回复聊过程需要获取岗位JD，请先登录 BOSS 直聘后再使用。',
+      '需要先登录',
+      {
+        confirmButtonText: '去登录',
+        cancelButtonText: '取消',
+        type: 'warning',
+        closeOnClickModal: false
+      }
+    )
+  } catch {
+    gtagRenderer('mock_chat_need_login_dialog_cancel')
+    return false
+  }
+  try {
+    await electron.ipcRenderer.invoke('login-with-cookie-assistant')
+  } catch (err) {
+    console.log(err)
+    gtagRenderer('mock_chat_login_cancelled', { err })
+    return false
+  }
+  const isLoggedIn = await electron.ipcRenderer.invoke('check-boss-zhipin-cookie-file')
+  if (!isLoggedIn) {
+    ElMessage.error('登录凭据未保存，暂时无法模拟已读不回复聊过程')
+    return false
+  }
+  gtagRenderer('mock_chat_login_done')
+  return true
+}
+
 // for 跟进话术
 const rechatLlmFallbackOptions = [
   {
@@ -771,6 +809,9 @@ const rechatLlmFallbackOptions = [
 
 async function handleTestEffectClicked() {
   gtagRenderer('goto_mock_chat_clicked')
+  if (!(await ensureBossLoginForMock())) {
+    return
+  }
   if (!(await checkIsCanRun())) {
     return
   }

@@ -60,6 +60,34 @@ const pickLlmConfigFromList = (llmConfigList, blockModelSet) => {
 // let _index = 0
 
 const RESUME_PLACEHOLDER = `__REPLACE_REAL_RESUME_HERE__`
+export const JOB_JD_PLACEHOLDER = `__REPLACE_REAL_JOB_JD_HERE__`
+const JOB_JD_UNAVAILABLE_TEXT = '（当前会话没有获取到岗位JD）'
+const JOB_JD_MAX_CHARS = 5000
+
+function normalizeJobJdForPrompt(jobJd?: string) {
+  const trimmed = typeof jobJd === 'string' ? jobJd.trim() : ''
+  if (!trimmed) {
+    return JOB_JD_UNAVAILABLE_TEXT
+  }
+  return trimmed.slice(0, JOB_JD_MAX_CHARS)
+}
+
+function replacePromptVariables(template: string, values: { resumeContent: string, jobJd: string }) {
+  return template
+    .split(RESUME_PLACEHOLDER).join(values.resumeContent)
+    .split(JOB_JD_PLACEHOLDER).join(values.jobJd)
+}
+
+function getErrorMessage(err: unknown) {
+  if (err instanceof Error) {
+    return err.message
+  }
+  if (err && typeof err === 'object' && 'message' in err) {
+    return String((err as { message?: unknown }).message ?? '')
+  }
+  return String(err ?? '')
+}
+
 export const defaultPromptMap = {
   rechat: {
     fileName: 'auto-reminder-resume-system-message-template.md',
@@ -76,15 +104,19 @@ export const defaultPromptMap = {
 **简历分析层：**
 请从以下简历内容中提取关键要素：\n\`\`\`markdown\n${RESUME_PLACEHOLDER}\n\`\`\`\n
 
+**岗位JD分析层：**
+如果以下岗位JD不是“当前会话没有获取到岗位JD”，请优先提取岗位要求，并把开场白或提醒消息写成与岗位高相关的内容：\n\`\`\`markdown\n${JOB_JD_PLACEHOLDER}\n\`\`\`\n
+
 ---
 要求提取：
 1. 硬技能：编程语言/技术栈/工具证书等（至少提取5项）
 2. 项目经历与成果：业绩、带量化数据的结果（至少3条）
 3. 软技能：沟通/管理等（至少2项）
 4. 特殊成就：奖项/专利等（可选）
+5. 岗位匹配点：从JD中提取2-4个核心要求，并优先选择简历中能对应这些要求的经历或技能
 
 **消息生成层：**
-根据上述要素随机组合生成消息
+根据上述要素和岗位JD随机组合生成消息，优先表达“我的经历与这个岗位要求的匹配点”
 
 **质量控制层：**
 每次生成前执行：
@@ -101,7 +133,7 @@ export const defaultPromptMap = {
   open: {
     fileName: 'auto-reminder-open-message-template.md',
     content:
-      '请根据我的简历，帮我写一句谦逊有礼貌的开场白。开头包含“您好”等类似敬语、结尾包含“期待回复”等类似话术。不必包含简历中的具体内容，但需要表达出应聘意向。请确保仅响应一句话，以JSON响应；数据结构参考：`{"response": "这里是将会发送给招聘者的内容"}`'
+      `请根据我的简历和岗位JD，帮我写一句谦逊有礼貌、与岗位要求高相关的开场白。\n\n岗位JD：\n\`\`\`markdown\n${JOB_JD_PLACEHOLDER}\n\`\`\`\n\n要求：开头包含“您好”等类似敬语，结尾包含“期待回复”等类似话术；优先选择简历中与岗位JD最匹配的1个技能、项目或成果，不要堆砌关键词。请确保仅响应一句话，以JSON响应；数据结构参考：\`{"response": "这里是将会发送给招聘者的内容"}\``
   }
 }
 
@@ -138,25 +170,42 @@ export const requestNewMessageContent = async (
   chatRecords,
   {
     requestScene,
-    llmConfigIdForPick
+    llmConfigIdForPick,
+    jobJd
   }: {
     requestScene?: RequestSceneEnum
-    llmConfigIdForPick?: string[]
+    llmConfigIdForPick?: string[] | null
+    jobJd?: string
   } = {}
 ) => {
   const systemMessageTemplate = await getValidTemplate({ type: 'rechat' })
   const resumeObject = (await readConfigFile('resumes.json'))?.[0]
   const resumeContent = formatResumeJsonToMarkdown(resumeObject)
+  const normalizedJobJd = normalizeJobJdForPrompt(jobJd)
+  const promptValues = {
+    resumeContent,
+    jobJd: normalizedJobJd
+  }
   const chatList = [
     {
       role: 'system',
-      content: systemMessageTemplate.replace(RESUME_PLACEHOLDER, resumeContent)
+      content: replacePromptVariables(systemMessageTemplate, promptValues)
     }
   ]
   const openMessageTemplate = await getValidTemplate({ type: 'open' })
+  if (
+    normalizedJobJd !== JOB_JD_UNAVAILABLE_TEXT &&
+    !systemMessageTemplate.includes(JOB_JD_PLACEHOLDER) &&
+    !openMessageTemplate.includes(JOB_JD_PLACEHOLDER)
+  ) {
+    chatList.push({
+      role: 'system',
+      content: `当前会话对应岗位JD：\n\`\`\`markdown\n${normalizedJobJd}\n\`\`\``
+    })
+  }
   chatList.push({
     role: 'user',
-    content: openMessageTemplate
+    content: replacePromptVariables(openMessageTemplate, promptValues)
   })
   // chatRecords = chatRecords.slice(chatRecords.length - _index)
   for (const record of chatRecords) {
@@ -170,14 +219,12 @@ export const requestNewMessageContent = async (
     chatList.push({
       role: 'user',
       content:
-        '围绕我简历中关于自我介绍、技术栈、工作经历、项目描述、项目业绩等内容，写一句自我介绍。开头不必包含“您好”、结尾不必包含“期待回复”；务必确保本次所回复的内容不能与之前所回复的内容雷同或相似。请确保仅回复一句话，以JSON响应，不要包含其他解释或内容；数据结构参考：`{"response": "这里是将会发送给招聘者的内容"}`'
+        '围绕我简历中关于自我介绍、技术栈、工作经历、项目描述、项目业绩等内容，并结合当前岗位JD的核心要求，写一句高相关的自我介绍。开头不必包含“您好”、结尾不必包含“期待回复”；务必确保本次所回复的内容不能与之前所回复的内容雷同或相似。请确保仅回复一句话，以JSON响应，不要包含其他解释或内容；数据结构参考：`{"response": "这里是将会发送给招聘者的内容"}`'
     })
   }
   console.log(chatList)
   let res, llmConfig
-  const llmRequestRecord: Omit<LlmModelUsageRecord, 'id' | 'providerApiSecretMd5'> & {
-    providerApiSecret: string
-  } = {}
+  const llmRequestRecord: Partial<Omit<LlmModelUsageRecord, 'id'>> = {}
   const blockModelSet = new Set()
   while (!res) {
     let llmConfigList = await readConfigFile('llm.json')
@@ -222,7 +269,7 @@ export const requestNewMessageContent = async (
       blockModelSet.add(llmConfig.id)
       Object.assign(llmRequestRecord, {
         hasError: true,
-        errorMessage: err?.message ?? ''
+        errorMessage: getErrorMessage(err)
       })
     } finally {
       llmRequestRecord.requestEndTime = new Date()
@@ -256,10 +303,10 @@ export const requestNewMessageContent = async (
         model: llmConfig?.model,
         providerCompleteApiUrl: llmConfig?.providerCompleteApiUrl
       })
-      throw new Error(`empty content. ${err?.message} ${res?.message?.content}`)
+      throw new Error(`empty content. ${res?.message?.content ?? ''}`)
     }
   } catch (err) {
-    throw new Error(`fail to parse response. ${err?.message} ${res?.message?.content}`)
+    throw new Error(`fail to parse response. ${getErrorMessage(err)} ${res?.message?.content}`)
   }
   return {
     responseText: textToSend,
@@ -268,10 +315,11 @@ export const requestNewMessageContent = async (
   }
 }
 
-export async function getGptContent(chatRecords) {
+export async function getGptContent(chatRecords, { jobJd }: { jobJd?: string } = {}) {
   const textToSend = (
     await requestNewMessageContent(chatRecords, {
-      requestScene: RequestSceneEnum.readNoReplyAutoReminder
+      requestScene: RequestSceneEnum.readNoReplyAutoReminder,
+      jobJd
     })
   ).responseText
   return textToSend
