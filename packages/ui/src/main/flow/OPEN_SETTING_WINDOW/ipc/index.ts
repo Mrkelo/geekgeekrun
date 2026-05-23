@@ -5,6 +5,7 @@ import {
   readConfigFile,
   writeConfigFile,
   readStorageFile,
+  writeStorageFile,
   storageFilePath
 } from '@geekgeekrun/geek-auto-start-chat-with-boss/runtime-file-utils.mjs'
 
@@ -59,6 +60,238 @@ import {
 import { getLastUsedAndAvailableBrowser } from '../../DOWNLOAD_DEPENDENCIES/utils/browser-history'
 import { waitForCommonJobConditionDone } from '../../../features/common-job-condition'
 import { ensureConfigFileExist } from '@geekgeekrun/geek-auto-start-chat-with-boss/runtime-file-utils.mjs'
+
+const READ_NO_REPLY_LLM_DEBUG_LOG_FILE = 'read-no-reply-llm-debug-log.json'
+const READ_NO_REPLY_LLM_DEBUG_LOG_LIMIT = 50
+const BOSS_LOCAL_STORAGE_PAGE_URL = 'https://www.zhipin.com/desktop/'
+const BOSS_RECOMMEND_JOB_PAGE_URL = 'https://www.zhipin.com/web/geek/jobs'
+
+async function appendReadNoReplyLlmDebugLog(payload) {
+  let logList = readStorageFile(READ_NO_REPLY_LLM_DEBUG_LOG_FILE)
+  if (!Array.isArray(logList)) {
+    logList = []
+  }
+  logList.unshift(payload)
+  await writeStorageFile(
+    READ_NO_REPLY_LLM_DEBUG_LOG_FILE,
+    logList.slice(0, READ_NO_REPLY_LLM_DEBUG_LOG_LIMIT)
+  )
+}
+
+async function saveBossStorageFromPage(page) {
+  const [cookies, localStorage] = await Promise.all([
+    page.cookies(),
+    page.evaluate(() => JSON.parse(JSON.stringify(window.localStorage)))
+  ])
+  await Promise.all([
+    writeStorageFile('boss-cookies.json', cookies),
+    writeStorageFile('boss-local-storage.json', localStorage)
+  ])
+}
+
+async function fetchRandomRecommendJobForReadNoReplyMock() {
+  const bossCookies = readStorageFile('boss-cookies.json')
+  if (!checkCookieListFormat(bossCookies)) {
+    throw new Error('LOGIN_STATUS_INVALID')
+  }
+
+  const bossLocalStorage = readStorageFile('boss-local-storage.json')
+  const [{ initPuppeteer }, { setDomainLocalStorage }, recommendConst] = await Promise.all([
+    import('@geekgeekrun/geek-auto-start-chat-with-boss/index.mjs'),
+    import('@geekgeekrun/utils/puppeteer/local-storage.mjs'),
+    import('@geekgeekrun/geek-auto-start-chat-with-boss/constant.mjs')
+  ])
+  const { RECOMMEND_JOB_ENTRY_SELECTOR, USER_SET_EXPECT_JOB_ENTRIES_SELECTOR } = recommendConst
+  const { puppeteer } = await initPuppeteer()
+  const puppeteerExecutable =
+    (await getLastUsedAndAvailableBrowser()) ?? (await getAnyAvailablePuppeteerExecutable())
+  if (!puppeteerExecutable?.executablePath) {
+    throw new Error('PUPPETEER_IS_NOT_EXECUTABLE')
+  }
+  const browser = await puppeteer.launch({
+    headless: false,
+    ignoreHTTPSErrors: true,
+    executablePath: puppeteerExecutable.executablePath,
+    defaultViewport: {
+      width: 1440,
+      height: 800
+    },
+    devtools: process.env.NODE_ENV === 'development'
+  })
+
+  try {
+    const page = (await browser.pages())[0]
+    for (const cookie of bossCookies) {
+      if (Object.hasOwn(cookie, 'sameSite')) {
+        cookie.sameSite = 'unspecified'
+      }
+      await page.setCookie(cookie)
+    }
+    await setDomainLocalStorage(browser, BOSS_LOCAL_STORAGE_PAGE_URL, bossLocalStorage)
+
+    const userInfoPromise = page
+      .waitForResponse(
+        (response) =>
+          response.url().startsWith('https://www.zhipin.com/wapi/zpuser/wap/getUserInfo.json'),
+        { timeout: 120 * 1000 }
+      )
+      .then((res) => res.json())
+      .catch(() => null)
+
+    await page.goto(BOSS_RECOMMEND_JOB_PAGE_URL, {
+      timeout: 120 * 1000,
+      waitUntil: 'domcontentloaded'
+    })
+    await page.waitForFunction(() => document.readyState === 'complete', { timeout: 120 * 1000 })
+    if (
+      page.url().startsWith('https://www.zhipin.com/web/common/403.html') ||
+      page.url().startsWith('https://www.zhipin.com/web/common/error.html')
+    ) {
+      throw new Error('ACCESS_IS_DENIED')
+    }
+
+    const userInfoResponse = await userInfoPromise
+    if (userInfoResponse && userInfoResponse.code !== 0) {
+      await writeStorageFile('boss-cookies.json', [])
+      throw new Error('LOGIN_STATUS_INVALID')
+    }
+
+    try {
+      const modalCloseButton = await page.waitForSelector('.dialog-wrap.dialog-account-safe .close', {
+        timeout: 3000
+      })
+      await modalCloseButton?.click()
+    } catch {
+      //
+    }
+
+    await Promise.race([
+      page.waitForSelector(USER_SET_EXPECT_JOB_ENTRIES_SELECTOR, { timeout: 30 * 1000 }),
+      page.waitForSelector(RECOMMEND_JOB_ENTRY_SELECTOR, { timeout: 30 * 1000 })
+    ])
+
+    const expectJobEntryCount = await page
+      .$$eval(USER_SET_EXPECT_JOB_ENTRIES_SELECTOR, (items) => items.length)
+      .catch(() => 0)
+    let selectedSourceText = ''
+    if (expectJobEntryCount > 0) {
+      const randomExpectJobIndex = Math.floor(Math.random() * expectJobEntryCount)
+      const selector = `${USER_SET_EXPECT_JOB_ENTRIES_SELECTOR}:nth-child(${randomExpectJobIndex + 1})`
+      selectedSourceText = await page.$eval(selector, (el) => el.textContent?.trim() ?? '')
+      const isActive = await page.$eval(selector, (el) => el.classList.contains('active'))
+      if (!isActive) {
+        await Promise.all([
+          page
+            .waitForResponse(
+              (response) =>
+                response
+                  .url()
+                  .startsWith('https://www.zhipin.com/wapi/zpgeek/pc/recommend/job/list.json'),
+              { timeout: 30 * 1000 }
+            )
+            .catch(() => null),
+          page.click(selector)
+        ])
+      }
+    } else {
+      selectedSourceText = await page
+        .$eval(RECOMMEND_JOB_ENTRY_SELECTOR, (el) => el.textContent?.trim() ?? '')
+        .catch(() => '')
+      await page.click(RECOMMEND_JOB_ENTRY_SELECTOR).catch(() => null)
+    }
+
+    await page.waitForFunction(
+      () => !document.querySelector('.job-recommend-result .job-rec-loading'),
+      { timeout: 30 * 1000 }
+    )
+    await page.waitForSelector('.job-list-container .rec-job-list li.job-card-box', {
+      timeout: 30 * 1000
+    })
+
+    const jobCount = await page.$$eval(
+      '.job-list-container .rec-job-list li.job-card-box',
+      (items) => items.length
+    )
+    if (!jobCount) {
+      throw new Error('CANNOT_FIND_RECOMMEND_JOB')
+    }
+    const randomJobIndexList = Array.from({ length: jobCount }, (_, index) => index).sort(
+      () => Math.random() - 0.5
+    )
+
+    let targetJobData: any = null
+    for (const randomJobIndex of randomJobIndexList.slice(0, Math.min(jobCount, 10))) {
+      try {
+        await page.evaluate((index) => {
+          const targetEl = document.querySelectorAll(
+            '.job-list-container .rec-job-list li.job-card-box'
+          )[index]
+          targetEl?.scrollIntoView({
+            behavior: 'auto',
+            block: 'center'
+          })
+        }, randomJobIndex)
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        const jobItemList = await page.$$('.job-list-container .rec-job-list li.job-card-box')
+        const targetJobEl = jobItemList[randomJobIndex]
+        if (!targetJobEl) {
+          continue
+        }
+        await Promise.all([
+          page
+            .waitForResponse(
+              (response) =>
+                response.url().startsWith('https://www.zhipin.com/wapi/zpgeek/job/detail.json'),
+              { timeout: 10 * 1000 }
+            )
+            .catch(() => null),
+          targetJobEl.click()
+        ])
+        await page.waitForFunction(
+          '!!document.querySelector(".job-detail-box")?.__vue__?.data?.jobInfo?.postDescription',
+          { timeout: 10 * 1000 }
+        )
+        targetJobData = await page.evaluate(
+          'document.querySelector(".job-detail-box").__vue__.data'
+        )
+        if (targetJobData?.jobInfo?.postDescription?.trim?.()) {
+          break
+        }
+      } catch (error) {
+        console.log('fetch random recommend job detail failed, try next one', error)
+      }
+    }
+
+    if (!targetJobData?.jobInfo?.postDescription?.trim?.()) {
+      throw new Error('CANNOT_FETCH_RECOMMEND_JOB_DETAIL')
+    }
+
+    await saveBossStorageFromPage(page).catch(() => void 0)
+    return {
+      encryptJobId: targetJobData.jobInfo.encryptId,
+      jobName: targetJobData.jobInfo.jobName,
+      positionName: targetJobData.jobInfo.positionName,
+      companyName:
+        targetJobData.brandComInfo?.brandName ?? targetJobData.brandComInfo?.customerBrandName ?? '',
+      bossName: targetJobData.bossInfo?.name ?? '',
+      description: targetJobData.jobInfo.postDescription,
+      sourceText: selectedSourceText,
+      fetchedAt: new Date().toISOString()
+    }
+  } finally {
+    try {
+      await browser.close()
+    } catch {
+      //
+    }
+    try {
+      const browserProcess = browser.process()
+      browserProcess?.kill()
+    } catch {
+      //
+    }
+  }
+}
 
 export default function initIpc() {
   ipcMain.handle('save-config-file-from-ui', async (ev, payload) => {
@@ -568,11 +801,38 @@ export default function initIpc() {
       }
     )
     async function requestLlm(_, requestPayload) {
-      return await requestNewMessageContent(requestPayload.messageList, {
+      const response = await requestNewMessageContent(requestPayload.messageList, {
         requestScene: RequestSceneEnum.testing,
         llmConfigIdForPick: requestPayload.llmConfigIdForPick ?? null,
         jobJd: requestPayload.jobJd ?? ''
       })
+      await appendReadNoReplyLlmDebugLog({
+        createdAt: new Date().toISOString(),
+        scene: 'read-no-reply-reminder-llm-mock',
+        jobInfo: requestPayload.jobInfo ?? null,
+        jobJd: requestPayload.jobJd ?? '',
+        requestMessages: response.requestMessages ?? [],
+        responseText: response.responseText ?? '',
+        usedLlmConfig: response.usedLlmConfig
+          ? {
+              id: response.usedLlmConfig.id,
+              model: response.usedLlmConfig.model,
+              providerCompleteApiUrl: response.usedLlmConfig.providerCompleteApiUrl
+            }
+          : null,
+        recordInfo: response.recordInfo
+          ? {
+              completionTokens: response.recordInfo.completionTokens ?? null,
+              promptTokens: response.recordInfo.promptTokens ?? null,
+              totalTokens: response.recordInfo.totalTokens ?? null,
+              requestStartTime: response.recordInfo.requestStartTime ?? null,
+              requestEndTime: response.recordInfo.requestEndTime ?? null,
+              hasError: response.recordInfo.hasError ?? null,
+              errorMessage: response.recordInfo.errorMessage ?? ''
+            }
+          : null
+      })
+      return response
     }
     ipcMain.handle('request-llm-for-test', requestLlm)
     readNoReplyReminderLlmMockWindow?.once('closed', () => {
@@ -584,6 +844,22 @@ export default function initIpc() {
     ipcMain.handle('get-llm-config-for-test', getLlmConfigList)
     readNoReplyReminderLlmMockWindow?.once('closed', () => {
       ipcMain.removeHandler('get-llm-config-for-test')
+    })
+    ipcMain.handle('fetch-random-recommend-job-for-test', async () => {
+      return await fetchRandomRecommendJobForReadNoReplyMock()
+    })
+    readNoReplyReminderLlmMockWindow?.once('closed', () => {
+      ipcMain.removeHandler('fetch-random-recommend-job-for-test')
+    })
+    ipcMain.handle('open-read-no-reply-llm-debug-log', async () => {
+      const existingLog = readStorageFile(READ_NO_REPLY_LLM_DEBUG_LOG_FILE)
+      if (!Array.isArray(existingLog)) {
+        await writeStorageFile(READ_NO_REPLY_LLM_DEBUG_LOG_FILE, [])
+      }
+      await shell.openPath(path.join(storageFilePath, READ_NO_REPLY_LLM_DEBUG_LOG_FILE))
+    })
+    readNoReplyReminderLlmMockWindow?.once('closed', () => {
+      ipcMain.removeHandler('open-read-no-reply-llm-debug-log')
     })
   })
   ipcMain.on('close-read-no-reply-reminder-llm-mock-window', () => {

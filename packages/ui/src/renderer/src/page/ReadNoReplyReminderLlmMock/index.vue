@@ -1,5 +1,38 @@
 <template>
   <div class="h100vh flex flex-col">
+    <div class="mock-context-bar">
+      <el-select
+        v-model="selectedJobId"
+        filterable
+        :loading="isJobLoading"
+        placeholder="随机采集用于模拟的岗位JD"
+        class="mock-job-select"
+      >
+        <el-option
+          v-for="item in jobOptionList"
+          :key="item.encryptJobId"
+          :value="item.encryptJobId"
+          :label="formatJobOptionLabel(item)"
+        >
+          <div>{{ formatJobOptionLabel(item) }}</div>
+          <div class="mock-job-option-subtitle">{{ item.positionName || item.companyName }}</div>
+        </el-option>
+      </el-select>
+      <el-button size="small" :loading="isJobLoading" @click="fetchRandomJobForMock">
+        随机采集JD
+      </el-button>
+      <el-button size="small" :disabled="!selectedJobInfo" @click="jobJdDialogVisible = true">
+        查看当前JD
+      </el-button>
+      <el-button
+        size="small"
+        :disabled="!lastRequestMessages.length"
+        @click="promptDialogVisible = true"
+      >
+        查看最后Prompt
+      </el-button>
+      <el-button size="small" @click="openDebugLog">打开Prompt日志</el-button>
+    </div>
     <div
       ref="scrollElRef"
       :style="{
@@ -165,6 +198,21 @@
       </el-button>
       <el-button mr10px type="text" @click="closeWindow">关闭对话框</el-button>
     </div>
+    <el-dialog v-model="jobJdDialogVisible" title="当前模拟使用的岗位JD" width="90%">
+      <div v-if="selectedJobInfo" class="mock-dialog-title">
+        {{ formatJobOptionLabel(selectedJobInfo) }}
+      </div>
+      <pre class="mock-debug-pre">{{ selectedJobJd || '当前没有可用岗位JD' }}</pre>
+    </el-dialog>
+    <el-dialog v-model="promptDialogVisible" title="最后一次发给AI的Prompt" width="90%">
+      <div v-if="lastPromptJobInfo" class="mock-dialog-title">
+        JD来源：{{ formatJobOptionLabel(lastPromptJobInfo) }}
+      </div>
+      <div v-for="(item, index) in lastRequestMessages" :key="index" class="mock-prompt-item">
+        <div class="mock-prompt-role">{{ item.role }}</div>
+        <pre class="mock-debug-pre">{{ item.content }}</pre>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -189,6 +237,18 @@ type MessageItem = {
 type ImageMessageItem = MessageItem & {
   type: 'image'
   imageUrl: string
+}
+type PromptMessage = {
+  role: string
+  content: string
+}
+type JobOption = {
+  encryptJobId: string
+  jobName?: string
+  positionName?: string
+  companyName?: string
+  bossName?: string
+  description?: string
 }
 const messageList = ref<(MessageItem | ImageMessageItem)[]>([])
 const searchParams = Object.fromEntries(new URL(location.href).searchParams)
@@ -215,14 +275,60 @@ async function getLlmConfigList() {
 }
 getLlmConfigList().catch(() => {})
 const selectedLlmConfig = ref(null)
+const selectedLlmConfigForRender = computed(() => {
+  return llmConfigListForRender.value.find((it) => it.id === selectedLlmConfig.value) ?? null
+})
 watch(
   () => selectedLlmConfig.value,
   () => {
     gtagRenderer('change_mock_chat_llm_model', {
-      model: selectedLlmConfig.value?.model ?? ''
+      model: selectedLlmConfigForRender.value?.model ?? ''
     })
   }
 )
+
+const jobOptionList = ref<JobOption[]>([])
+const selectedJobId = ref('')
+const isJobLoading = ref(false)
+const jobJdDialogVisible = ref(false)
+const promptDialogVisible = ref(false)
+const lastRequestMessages = ref<PromptMessage[]>([])
+const lastPromptJobInfo = ref<JobOption | null>(null)
+const selectedJobInfo = computed(() => {
+  return jobOptionList.value.find((it) => it.encryptJobId === selectedJobId.value) ?? null
+})
+const selectedJobJd = computed(() => selectedJobInfo.value?.description?.trim?.() ?? '')
+
+function formatJobOptionLabel(jobInfo?: JobOption | null) {
+  if (!jobInfo) {
+    return ''
+  }
+  return [jobInfo.companyName, jobInfo.jobName || jobInfo.positionName].filter(Boolean).join(' - ')
+}
+
+async function fetchRandomJobForMock() {
+  isJobLoading.value = true
+  try {
+    const jobInfo = (await electron.ipcRenderer.invoke(
+      'fetch-random-recommend-job-for-test'
+    )) as JobOption
+    if (!jobInfo?.description?.trim?.()) {
+      ElMessage.warning('本次没有采集到可用于模拟的JD，请稍后重试')
+      return
+    }
+    jobOptionList.value = [jobInfo, ...jobOptionList.value].filter(
+      (it, index, arr) => arr.findIndex((item) => item.encryptJobId === it.encryptJobId) === index
+    )
+    selectedJobId.value = jobInfo.encryptJobId
+    ElMessage.success('已随机采集一条推荐职位JD')
+  } catch (err) {
+    console.log(err)
+    ElMessage.error('随机采集推荐职位JD失败，请确认已登录且推荐职位页可访问')
+  } finally {
+    isJobLoading.value = false
+  }
+}
+fetchRandomJobForMock().catch(() => {})
 
 const scrollElRef = ref(null)
 const isLoading = ref(false)
@@ -238,8 +344,37 @@ const constantOpenContent = (() => {
   }
 })()
 const rechatContentSource = Number(searchParams.rechatContentSource)
-const mockJobJd =
-  '岗位职责：负责业务系统前端功能开发、性能优化和用户体验改进；要求熟悉 Vue/React、TypeScript、工程化工具，有复杂业务组件和跨团队协作经验。'
+
+function buildLlmRequestPayload(messageListForRequest) {
+  if (!selectedJobJd.value) {
+    ElMessage.error('当前没有选中的岗位JD，无法模拟AI生成')
+    return null
+  }
+  return {
+    messageList: messageListForRequest,
+    llmConfigIdForPick: selectedLlmConfig.value ? [selectedLlmConfig.value] : null,
+    jobJd: selectedJobJd.value,
+    jobInfo: selectedJobInfo.value
+      ? {
+          encryptJobId: selectedJobInfo.value.encryptJobId,
+          jobName: selectedJobInfo.value.jobName,
+          positionName: selectedJobInfo.value.positionName,
+          companyName: selectedJobInfo.value.companyName,
+          bossName: selectedJobInfo.value.bossName
+        }
+      : null
+  }
+}
+
+function handleLlmResponse(response) {
+  lastRequestMessages.value = response.requestMessages ?? []
+  lastPromptJobInfo.value = selectedJobInfo.value
+  messageList.value.push({
+    type: 'text',
+    text: response.responseText,
+    usedLlmConfig: response.usedLlmConfig
+  })
+}
 
 async function sendLlmGeneratedContent() {
   gtagRenderer('click_mock_chat_send')
@@ -248,17 +383,13 @@ async function sendLlmGeneratedContent() {
     if (openContentSource === OPEN_CONTENT_SOURCE.GEMINI_WITH_CHAT_CONTEXT) {
       isLoading.value = true
       try {
-        const response = await electron.ipcRenderer.invoke('request-llm-for-test', {
-          messageList: [],
-          llmConfigIdForPick: selectedLlmConfig.value ? [selectedLlmConfig.value] : null,
-          jobJd: mockJobJd
-        })
+        const requestPayload = buildLlmRequestPayload([])
+        if (!requestPayload) {
+          return
+        }
+        const response = await electron.ipcRenderer.invoke('request-llm-for-test', requestPayload)
         console.log(response)
-        messageList.value.push({
-          type: 'text',
-          text: response.responseText,
-          usedLlmConfig: response.usedLlmConfig
-        })
+        handleLlmResponse(response)
         await sleep(50)
         ;(scrollElRef.value as any as HTMLDivElement)?.scrollTo({
           top: scrollElRef.value?.scrollHeight,
@@ -284,17 +415,15 @@ async function sendLlmGeneratedContent() {
     if (rechatContentSource === RECHAT_CONTENT_SOURCE.GEMINI_WITH_CHAT_CONTEXT) {
       isLoading.value = true
       try {
-        const response = await electron.ipcRenderer.invoke('request-llm-for-test', {
-          messageList: JSON.parse(JSON.stringify((messageList.value ?? []).slice(-8))),
-          llmConfigIdForPick: selectedLlmConfig.value ? [selectedLlmConfig.value] : null,
-          jobJd: mockJobJd
-        })
+        const requestPayload = buildLlmRequestPayload(
+          JSON.parse(JSON.stringify((messageList.value ?? []).slice(-recentMessageQuantityForLlm)))
+        )
+        if (!requestPayload) {
+          return
+        }
+        const response = await electron.ipcRenderer.invoke('request-llm-for-test', requestPayload)
         console.log(response)
-        messageList.value.push({
-          type: 'text',
-          text: response.responseText,
-          usedLlmConfig: response.usedLlmConfig
-        })
+        handleLlmResponse(response)
         await sleep(50)
         ;(scrollElRef.value as any as HTMLDivElement)?.scrollTo({
           top: scrollElRef.value?.scrollHeight,
@@ -320,6 +449,10 @@ async function sendLlmGeneratedContent() {
   }
 }
 
+async function openDebugLog() {
+  await electron.ipcRenderer.invoke('open-read-no-reply-llm-debug-log')
+}
+
 function closeWindow() {
   electron.ipcRenderer.send(`close-read-no-reply-reminder-llm-mock-window`)
 }
@@ -341,6 +474,54 @@ gtagRenderer('enter_mock_chat_page')
 </script>
 
 <style lang="scss" scoped>
+.mock-context-bar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e6e6e6;
+  background: #fafafa;
+}
+.mock-job-select {
+  width: 100%;
+  grid-column: 1 / -1;
+}
+.mock-context-bar :deep(.el-button) {
+  width: 100%;
+  margin-left: 0;
+}
+.mock-job-option-subtitle {
+  color: #999;
+  font-size: 12px;
+  line-height: 1.2;
+}
+.mock-dialog-title {
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+.mock-debug-pre {
+  max-height: 55vh;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid #e6e6e6;
+  border-radius: 4px;
+  background: #f8f8f8;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.mock-prompt-item + .mock-prompt-item {
+  margin-top: 12px;
+}
+.mock-prompt-role {
+  margin-bottom: 4px;
+  color: #666;
+  font-size: 12px;
+  font-weight: 600;
+}
 .message-item-wrap {
   max-width: 420px;
   margin-top: 20px;

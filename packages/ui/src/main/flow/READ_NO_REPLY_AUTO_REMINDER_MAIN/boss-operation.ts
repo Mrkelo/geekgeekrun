@@ -311,7 +311,8 @@ export const requestNewMessageContent = async (
   return {
     responseText: textToSend,
     usedLlmConfig: llmConfig,
-    recordInfo: llmRequestRecord
+    recordInfo: llmRequestRecord,
+    requestMessages: chatList
   }
 }
 
