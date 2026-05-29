@@ -817,7 +817,8 @@ export default function initIpc() {
           ? {
               id: response.usedLlmConfig.id,
               model: response.usedLlmConfig.model,
-              providerCompleteApiUrl: response.usedLlmConfig.providerCompleteApiUrl
+              providerCompleteApiUrl: response.usedLlmConfig.providerCompleteApiUrl,
+              thinking: response.usedLlmConfig.thinking ?? null
             }
           : null,
         recordInfo: response.recordInfo

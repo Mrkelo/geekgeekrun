@@ -60,7 +60,7 @@
                 >OpenAI SDK</a
               >
             </li>
-            <li><b class="color-red">暂不支持推理模型</b>（例如 DeepSeek-R1）</li>
+            <li>支持 reasoning/thinking 参数，请仅在服务提供商和模型支持时启用</li>
             <li>
               请自行确保您所接入的服务商能够保护您的隐私。<b class="color-red"
                 >此处所列举“服务商-模型”由第三方提供，仅供配置参考，本程序不能保证它们能够合法使用您的数据，不表示本程序认可相关模型</b
@@ -167,6 +167,25 @@
                   font-size-12px
                 ></el-input>
               </el-form-item>
+              <el-form-item prop="thinking" label="推理/思考能力">
+                <div class="thinking-config">
+                  <el-checkbox v-model="conf.thinking.enabled" font-size-12px label="启用 Thinking" />
+                  <el-input-number
+                    v-if="conf.thinking.enabled"
+                    v-model="conf.thinking.budget"
+                    :min="256"
+                    :max="32768"
+                    :step="512"
+                    :precision="0"
+                    controls-position="right"
+                    class="thinking-budget-input"
+                    font-size-12px
+                  />
+                </div>
+                <div class="thinking-config-tip">
+                  enable_thinking 和 thinking_budget 会传递给兼容服务商，不支持的模型可能拒绝请求。
+                </div>
+              </el-form-item>
               <div class="serve-weight-config">
                 <div class="flex">
                   <el-form-item prop="enabled">
@@ -258,13 +277,20 @@ import { gtagRenderer as baseGtagRenderer } from '@renderer/utils/gtag'
 import { SINGLE_ITEM_DEFAULT_SERVE_WEIGHT } from '../../../../common/constant'
 import { v4 as uuid } from 'uuid'
 import { sleep } from '@geekgeekrun/utils/sleep.mjs'
+
+interface ThinkingConfig {
+  enabled: boolean
+  budget: number
+}
+
 interface LlmConfigItem {
   id: string
   providerCompleteApiUrl: string
   providerApiSecret: string
   model: string
   serveWeight: number
-  enabled: true
+  enabled: boolean
+  thinking: ThinkingConfig
 }
 
 const gtagRenderer = (name, params?: object) => {
@@ -281,9 +307,22 @@ function getNewConfigItem(): LlmConfigItem {
     providerApiSecret: '',
     model: '',
     serveWeight: 10,
-    enabled: true
+    enabled: true,
+    thinking: {
+      enabled: false,
+      budget: 2048
+    }
   }
 }
+
+function normalizeThinkingConfig(raw: any): ThinkingConfig {
+  const budget = Number(raw?.budget)
+  return {
+    enabled: raw?.enabled === true,
+    budget: Number.isFinite(budget) && Number.isInteger(budget) && budget > 0 ? budget : 2048
+  }
+}
+
 const formRef = ref<InstanceType<typeof ElForm>>()
 const formContent = ref<LlmConfigItem[]>([getNewConfigItem()])
 
@@ -369,6 +408,7 @@ onMounted(async () => {
     if (!it.id) {
       conf.id = uuid()
     }
+    conf.thinking = normalizeThinkingConfig(it.thinking)
     return conf
   })
 })
@@ -384,7 +424,11 @@ const llmPresetList: {
       providerApiSecret: '',
       providerCompleteApiUrl: 'https://api.deepseek.com/v1',
       serveWeight: 100,
-      enabled: true
+      enabled: true,
+      thinking: {
+        enabled: false,
+        budget: 2048
+      }
     }
   },
   {
@@ -394,7 +438,11 @@ const llmPresetList: {
       providerApiSecret: '',
       providerCompleteApiUrl: 'https://ark.cn-beijing.volces.com/api/v3',
       serveWeight: 100,
-      enabled: true
+      enabled: true,
+      thinking: {
+        enabled: false,
+        budget: 2048
+      }
     }
   },
   {
@@ -404,7 +452,11 @@ const llmPresetList: {
       providerApiSecret: '',
       providerCompleteApiUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       serveWeight: 100,
-      enabled: true
+      enabled: true,
+      thinking: {
+        enabled: false,
+        budget: 2048
+      }
     }
   },
   // TODO:
@@ -425,7 +477,11 @@ const llmPresetList: {
       providerApiSecret: 'sk-P3kvkV6UZ9WMy6AH792480Fc5e1c4dAb8aE17b20FcAc4eC3',
       providerCompleteApiUrl: 'https://free.v36.cm/v1',
       serveWeight: 20,
-      enabled: true
+      enabled: true,
+      thinking: {
+        enabled: false,
+        budget: 2048
+      }
     }
   },
   {
@@ -435,7 +491,11 @@ const llmPresetList: {
       providerApiSecret: 'ollama',
       providerCompleteApiUrl: 'http://127.0.0.1:11434/v1',
       serveWeight: 10,
-      enabled: true
+      enabled: true,
+      thinking: {
+        enabled: false,
+        budget: 2048
+      }
     }
   }
 ]
@@ -467,12 +527,9 @@ function handlePresetClick(selected: (typeof llmPresetList)[number], index) {
   gtagRenderer('model_preset_clicked', {
     name: selected.name
   })
-  for (const k of Object.keys(formContent.value[index])) {
-    formContent.value[index][k] = selected.config[k]
-  }
-  if (!formContent.value[index].id) {
-    formContent.value[index].id = uuid()
-  }
+  const existingId = formContent.value[index].id || uuid()
+  const selectedConfig = JSON.parse(JSON.stringify(selected.config))
+  Object.assign(formContent.value[index], selectedConfig, { id: existingId })
 }
 
 const firstInputRefList = ref<InstanceType<typeof ElInput>[]>([])
@@ -567,6 +624,20 @@ const openExternalLink = (url) => {
       display: flex;
       flex-wrap: nowrap;
     }
+  }
+  .thinking-config {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .thinking-budget-input {
+    width: 140px;
+  }
+  .thinking-config-tip {
+    color: var(--el-text-color-secondary);
+    font-size: 12px;
+    line-height: 1.4;
+    margin-top: 4px;
   }
 }
 </style>

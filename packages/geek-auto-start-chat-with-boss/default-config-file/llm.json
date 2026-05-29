@@ -4,5 +4,9 @@
   "model": "",
   "enabled": true,
   "serveWeight": 100,
+  "thinking": {
+    "enabled": false,
+    "budget": 2048
+  },
   "_extra": {}
 }]

@@ -252,7 +252,8 @@ export const requestNewMessageContent = async (
         {
           baseURL: llmConfig.providerCompleteApiUrl,
           apiKey: llmConfig.providerApiSecret,
-          model: llmConfig.model
+          model: llmConfig.model,
+          thinking: llmConfig.thinking
         },
         chatList
       )
