@@ -1,11 +1,122 @@
-import OpenAI from "openai";
+import { generateText } from "ai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 
-/**
- * 调用 Chat Completions API，支持推理模型（thinking 参数）。
- *
- * @param {{ baseURL: string, apiKey: string, model: string, max_tokens?: number, temperature?: number, thinking?: { enabled?: boolean, budget?: number } }} config
- * @param {Array<{ role: string, content: string }>} messages
- */
+export const GEEKGEEKRUN_AI_PROVIDER_NAME = "geekgeekrunOpenaiCompatible";
+
+export function normalizeThinkingConfig(thinking) {
+  const rawBudget = thinking?.budget;
+  const budget =
+    Number.isInteger(rawBudget) && rawBudget > 0
+      ? rawBudget
+      : 2048;
+
+  return {
+    enabled: thinking?.enabled === true,
+    budget,
+  };
+}
+
+export function resolveMaxOutputTokens(maxTokens, thinking) {
+  if (!thinking?.enabled) {
+    return typeof maxTokens === "number" ? maxTokens : 1200;
+  }
+
+  const minimum = thinking.budget + 512;
+  if (typeof maxTokens === "number") {
+    return Math.max(maxTokens, minimum);
+  }
+  return Math.max(8192, minimum);
+}
+
+export function resolveTemperature(temperature, thinking) {
+  if (typeof temperature === "number") {
+    return temperature;
+  }
+  return thinking?.enabled ? 0.6 : 0.1;
+}
+
+export function buildProviderOptions({ response_format, thinking } = {}) {
+  const normalizedThinking = normalizeThinkingConfig(thinking);
+  if (!response_format && !normalizedThinking.enabled) {
+    return undefined;
+  }
+
+  const body = {};
+  if (response_format) {
+    body.response_format = response_format;
+  }
+  if (normalizedThinking.enabled) {
+    body.enable_thinking = true;
+    body.thinking_budget = normalizedThinking.budget;
+  }
+
+  return {
+    [GEEKGEEKRUN_AI_PROVIDER_NAME]: body,
+  };
+}
+
+function stringifyOutput(output) {
+  if (output === undefined) {
+    return "";
+  }
+  return JSON.stringify(output);
+}
+
+function resolveReasoningText(result) {
+  if (Array.isArray(result.reasoning)) {
+    const reasoning = result.reasoning
+      .map((part) => part?.text)
+      .filter((text) => typeof text === "string" && text.length > 0)
+      .join("\n");
+    if (reasoning) {
+      return reasoning;
+    }
+  }
+  return typeof result.reasoningText === "string" ? result.reasoningText : undefined;
+}
+
+function tokenValue(value) {
+  return typeof value === "number" ? value : null;
+}
+
+export function toOpenAICompatibleCompletion(result) {
+  const usage = result.usage ?? result.totalUsage ?? {};
+  const inputTokenDetails = usage.inputTokenDetails ?? {};
+  const outputTokenDetails = usage.outputTokenDetails ?? {};
+  const content =
+    typeof result.text === "string" ? result.text : stringifyOutput(result.output);
+  const reasoningContent = resolveReasoningText(result);
+
+  return {
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content,
+          reasoning_content: reasoningContent,
+        },
+        finish_reason: result.finishReason ?? null,
+      },
+    ],
+    usage: {
+      prompt_tokens: tokenValue(usage.inputTokens),
+      completion_tokens: tokenValue(usage.outputTokens),
+      total_tokens: tokenValue(usage.totalTokens),
+      prompt_cache_hit_tokens: tokenValue(inputTokenDetails.cacheReadTokens),
+      prompt_cache_miss_tokens: tokenValue(
+        inputTokenDetails.noCacheTokens ?? inputTokenDetails.cacheWriteTokens,
+      ),
+      reasoning_tokens: tokenValue(outputTokenDetails.reasoningTokens),
+    },
+    _aiSdk: {
+      finishReason: result.finishReason,
+      rawFinishReason: result.rawFinishReason,
+      warnings: result.warnings,
+    },
+  };
+}
+
 export async function completes(
   {
     baseURL,
@@ -14,58 +125,39 @@ export async function completes(
     max_tokens,
     temperature,
     thinking,
-    response_format
+    response_format,
   },
-  messages
+  messages,
 ) {
-  const openai = new OpenAI({
+  const provider = createOpenAICompatible({
+    name: GEEKGEEKRUN_AI_PROVIDER_NAME,
     baseURL,
     apiKey,
   });
+  const normalizedThinking = normalizeThinkingConfig(thinking);
+  const maxOutputTokens = resolveMaxOutputTokens(max_tokens, normalizedThinking);
+  const resolvedTemperature = resolveTemperature(temperature, normalizedThinking);
+  const providerOptions = buildProviderOptions({
+    response_format,
+    thinking: normalizedThinking,
+  });
 
-  const isThinking = !!(thinking?.enabled && thinking?.budget)
-
-  // 推理模型开启 thinking 时，max_tokens 必须大于 thinking_budget，否则会因长度上限截断 JSON。
-  // 调用方若未显式传 max_tokens，按是否启用 thinking 给一个安全的默认值。
-  const resolvedMaxTokens =
-    typeof max_tokens === 'number'
-      ? max_tokens
-      : isThinking
-        ? 8192
-        : 1200
-
-  // temperature：推理模型启用 thinking 时建议 ≥0.5（部分 provider 限制），普通 JSON 输出用 0.1。
-  const resolvedTemperature =
-    typeof temperature === 'number'
-      ? temperature
-      : isThinking
-        ? 0.6
-        : 0.1
-
-  const createParams = {
+  const result = await generateText({
+    model: provider(model),
     messages,
-    model,
-    max_tokens: resolvedMaxTokens,
+    maxOutputTokens,
     temperature: resolvedTemperature,
-  }
+    providerOptions,
+  });
 
-  if (isThinking) {
-    // SiliconFlow / 火山方舟等兼容顶层参数；OpenAI SDK 通过 extra_body 透传其他字段
-    createParams.enable_thinking = true
-    createParams.thinking_budget = thinking.budget
-  }
-
-  if (response_format) {
-    createParams.response_format = response_format
-  }
-
-  const completion = await openai.chat.completions.create(createParams);
-
-  // reasoning_content 仅推理模型填充，普通模型为 undefined
-  const msg = completion.choices[0].message
+  const completion = toOpenAICompatibleCompletion(result);
+  const msg = completion.choices[0].message;
   if (msg.reasoning_content) {
-    console.log('[gpt-request] reasoning_content:', String(msg.reasoning_content ?? '').slice(0, 200))
+    console.log(
+      "[gpt-request] reasoning_content:",
+      String(msg.reasoning_content).slice(0, 200),
+    );
   }
-  console.log('[gpt-request] content:', (msg.content ?? '').slice(0, 200));
+  console.log("[gpt-request] content:", String(msg.content ?? "").slice(0, 200));
   return completion;
 }

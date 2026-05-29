@@ -3,10 +3,13 @@
   "private": true,
   "version": "1.0.0",
   "description": "utils",
-  "scripts": {},
+  "scripts": {
+    "test": "node --test test"
+  },
   "author": "geekgeekrun",
   "license": "ISC",
   "dependencies": {
-    "openai": "^4.91.1"
+    "@ai-sdk/openai-compatible": "^2.0.48",
+    "ai": "^6.0.191"
   }
 }
