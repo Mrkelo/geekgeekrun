@@ -11,6 +11,7 @@ files:
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
   - '!scripts/*'
+  - '!dist/**'
   - '!**/*.{map,ts,flow,scss,sass,less}'
   - '!node_modules/date-fns/esm/*'
   - '!node_modules/highlight.js/{styles,scss}/*'

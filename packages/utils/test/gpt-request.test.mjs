@@ -5,6 +5,7 @@ import {
   GEEKGEEKRUN_AI_PROVIDER_NAME,
   buildProviderOptions,
   normalizeThinkingConfig,
+  normalizeMessagesForGenerateText,
   resolveMaxOutputTokens,
   resolveTemperature,
   toOpenAICompatibleCompletion,
@@ -73,6 +74,24 @@ test("builds provider options with response format and thinking settings", () =>
   );
 
   assert.equal(buildProviderOptions(), undefined);
+});
+
+test("normalizes system messages for AI SDK generateText", () => {
+  const userMessage = { role: "user", content: "resume text" };
+  const assistantMessage = { role: "assistant", content: "ok" };
+
+  assert.deepEqual(
+    normalizeMessagesForGenerateText([
+      { role: "system", content: "first system prompt" },
+      userMessage,
+      { role: "system", content: "second system prompt" },
+      assistantMessage,
+    ]),
+    {
+      system: "first system prompt\n\nsecond system prompt",
+      messages: [userMessage, assistantMessage],
+    },
+  );
 });
 
 test("maps AI SDK text results to OpenAI-compatible completions", () => {

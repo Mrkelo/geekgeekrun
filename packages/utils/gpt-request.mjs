@@ -79,6 +79,44 @@ function tokenValue(value) {
   return typeof value === "number" ? value : null;
 }
 
+function normalizeSystemContent(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (typeof part?.text === "string") return part.text;
+        return "";
+      })
+      .filter((text) => text.length > 0)
+      .join("\n");
+  }
+  return content == null ? "" : String(content);
+}
+
+export function normalizeMessagesForGenerateText(messages = []) {
+  const systemMessages = [];
+  const conversationMessages = [];
+
+  for (const message of messages ?? []) {
+    if (message?.role === "system") {
+      const content = normalizeSystemContent(message.content);
+      if (content) {
+        systemMessages.push(content);
+      }
+      continue;
+    }
+    conversationMessages.push(message);
+  }
+
+  return {
+    system: systemMessages.length > 0 ? systemMessages.join("\n\n") : undefined,
+    messages: conversationMessages,
+  };
+}
+
 export function toOpenAICompatibleCompletion(result) {
   const usage = result.usage ?? result.totalUsage ?? {};
   const inputTokenDetails = usage.inputTokenDetails ?? {};
@@ -141,10 +179,12 @@ export async function completes(
     response_format,
     thinking: normalizedThinking,
   });
+  const normalizedMessages = normalizeMessagesForGenerateText(messages);
 
   const result = await generateText({
     model: provider(model),
-    messages,
+    system: normalizedMessages.system,
+    messages: normalizedMessages.messages,
     maxOutputTokens,
     temperature: resolvedTemperature,
     providerOptions,

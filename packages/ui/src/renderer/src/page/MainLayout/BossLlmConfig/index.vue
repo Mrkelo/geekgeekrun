@@ -289,7 +289,6 @@ function newModel(overrides: Partial<ModelEntry> = {}): ModelEntry {
     name: '',
     model: '',
     enabled: true,
-    thinking: { enabled: false, budget: 2048 },
     _testing: false,
     _testResult: null,
     ...overrides,
