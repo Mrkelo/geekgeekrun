@@ -230,6 +230,7 @@ const isLoading = ref(true)
 
 const purposes = [
   { key: 'resume_screening', label: '简历筛选' },
+  { key: 'rubric_generation', label: '自动生成评分标准' },
   { key: 'greeting_generation', label: '招呼语生成' },
   { key: 'message_rewrite', label: '消息续写' },
   { key: 'default', label: '默认' }
@@ -308,18 +309,123 @@ function newProvider(overrides: Partial<ProviderEntry> = {}): ProviderEntry {
 }
 
 // ── 生命周期 ─────────────────────────────────────────────────────────────────
+function normalizeThinkingConfig(raw: any): ThinkingConfig {
+  const budget = Number(raw?.budget)
+  return {
+    enabled: raw?.enabled === true,
+    budget: Number.isFinite(budget) && Number.isInteger(budget) && budget > 0 ? budget : 2048
+  }
+}
+
+function normalizeProviderModels(rawModels: any): ModelEntry[] {
+  if (!Array.isArray(rawModels)) {
+    return []
+  }
+
+  return rawModels.map((m: any) => {
+    const rawModel = m ?? {}
+    return newModel({
+      ...rawModel,
+      thinking: normalizeThinkingConfig(rawModel.thinking)
+    })
+  })
+}
+
+function flattenModelsToProviders(rawModels: any): ProviderEntry[] {
+  if (!Array.isArray(rawModels)) {
+    return []
+  }
+
+  const groups = new Map<string, ProviderEntry>()
+
+  for (const m of rawModels) {
+    const rawModel = m ?? {}
+    const baseURL = rawModel.baseURL ?? ''
+    const apiKey = rawModel.apiKey ?? ''
+    const key = `${baseURL}\n${apiKey}`
+    let provider = groups.get(key)
+
+    if (!provider) {
+      provider = newProvider({
+        name: baseURL || 'OpenAI Compatible Provider',
+        baseURL,
+        apiKey
+      })
+      groups.set(key, provider)
+    }
+
+    const {
+      baseURL: _baseURL,
+      apiKey: _apiKey,
+      ...model
+    } = rawModel
+
+    provider.models.push(newModel({
+      ...model,
+      thinking: normalizeThinkingConfig(model.thinking)
+    }))
+  }
+
+  return Array.from(groups.values())
+}
+
+function normalizeBossLlmProviders(config: any): ProviderEntry[] {
+  if (Array.isArray(config?.providers)) {
+    return config.providers.map((p: any) => newProvider({
+      ...p,
+      baseURL: p?.baseURL ?? '',
+      apiKey: p?.apiKey ?? '',
+      models: normalizeProviderModels(p?.models)
+    }))
+  }
+
+  return flattenModelsToProviders(config?.models)
+}
+
+function normalizeModelForSave(inputModel: ModelEntry) {
+  const {
+    baseURL: _baseURL,
+    apiKey: _apiKey,
+    _providerId,
+    _providerName,
+    _testing,
+    _testResult,
+    thinking,
+    ...model
+  } = inputModel as ModelEntry & {
+    baseURL?: string
+    apiKey?: string
+    _providerId?: string
+    _providerName?: string
+  }
+
+  return {
+    ...model,
+    thinking: normalizeThinkingConfig(thinking)
+  }
+}
+
+function providersToSave(inputProviders: ProviderEntry[]) {
+  const usedProviderIds = new Set<string>()
+
+  return inputProviders.map((p) => {
+    const providerId = p.id && !usedProviderIds.has(p.id) ? p.id : crypto.randomUUID()
+    usedProviderIds.add(providerId)
+
+    return {
+      id: providerId,
+      name: p.name,
+      baseURL: p.baseURL,
+      apiKey: p.apiKey,
+      models: p.models.map(normalizeModelForSave)
+    }
+  })
+}
+
 onMounted(async () => {
   try {
     const config = await ipcRenderer.invoke('boss-fetch-llm-config')
-    providers.value = (config?.providers ?? []).map((p: any) => ({
-      ...newProvider(),
-      ...p,
-      models: (p.models ?? []).map((m: any) => ({
-        ...newModel(),
-        ...m,
-        thinking: { enabled: false, budget: 2048, ...(m.thinking ?? {}) }
-      }))
-    }))
+    providers.value = normalizeBossLlmProviders(config)
     purposeDefaultModelId.value = config?.purposeDefaultModelId ?? {}
   } catch (err) {
     console.error('[BossLlmConfig] 加载配置失败', err)
@@ -377,13 +483,7 @@ async function handleSave() {
   isSaving.value = true
   try {
     const config = {
-      providers: providers.value.map((p) => ({
-        id: p.id,
-        name: p.name,
-        baseURL: p.baseURL,
-        apiKey: p.apiKey,
-        models: p.models.map(({ _testing, _testResult, ...rest }) => rest)
-      })),
+      providers: providersToSave(providers.value),
       purposeDefaultModelId: purposeDefaultModelId.value
     }
     await ipcRenderer.invoke('boss-save-llm-config', JSON.stringify(config))

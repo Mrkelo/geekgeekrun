@@ -276,12 +276,12 @@ const defaultBossLlmConfig = { providers: [], purposeDefaultModelId: {} }
 
 /**
  * 将旧格式（flat models 数组）迁移为新格式（providers 数组）。
- * 按 baseURL 分组，同一 baseURL 的模型归入同一 provider。
+ * 按 baseURL + apiKey 分组，同一凭据组的模型归入同一 provider。
  */
 function migrateFlatModelsToProviders (oldConfig) {
   const grouped = {}
   for (const m of oldConfig.models) {
-    const key = m.baseURL ?? ''
+    const key = `${m.baseURL ?? ''}\n${m.apiKey ?? ''}`
     if (!grouped[key]) {
       grouped[key] = {
         id: crypto.randomUUID(),

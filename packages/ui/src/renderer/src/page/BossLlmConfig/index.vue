@@ -177,6 +177,8 @@ interface ModelEntry {
   enabled: boolean
   thinking: ThinkingConfig
   // UI 临时状态
+  _providerId?: string
+  _providerName?: string
   _testing?: boolean
   _testResult?: { ok: boolean; error?: string } | null
 }
@@ -250,14 +252,97 @@ function newModelEntry(overrides: Partial<ModelEntry> = {}): ModelEntry {
 }
 
 // ── 生命周期 ─────────────────────────────────────────────────────────────────
+function normalizeThinkingConfig(raw: any): ThinkingConfig {
+  const budget = Number(raw?.budget)
+  return {
+    enabled: raw?.enabled === true,
+    budget: Number.isFinite(budget) && Number.isInteger(budget) && budget > 0 ? budget : 2048
+  }
+}
+
+function flattenBossLlmModels(config: any): ModelEntry[] {
+  if (Array.isArray(config?.providers)) {
+    return config.providers.flatMap((p: any) => {
+      if (!Array.isArray(p?.models)) {
+        return []
+      }
+
+      return p.models.map((m: any) => newModelEntry({
+        ...m,
+        baseURL: p.baseURL ?? '',
+        apiKey: p.apiKey ?? '',
+        _providerId: p.id,
+        _providerName: p.name,
+        thinking: normalizeThinkingConfig(m.thinking)
+      }))
+    })
+  }
+
+  if (Array.isArray(config?.models)) {
+    return config.models.map((m: any) => newModelEntry({
+      ...m,
+      thinking: normalizeThinkingConfig(m.thinking)
+    }))
+  }
+
+  return []
+}
+
+function modelsToProviders(inputModels: ModelEntry[]) {
+  const groups = new Map<string, {
+    id: string
+    name: string
+    baseURL: string
+    apiKey: string
+    models: Array<Omit<ModelEntry, 'baseURL' | 'apiKey' | '_providerId' | '_providerName' | '_testing' | '_testResult'>>
+  }>()
+  const usedProviderIds = new Set<string>()
+
+  for (const inputModel of inputModels) {
+    const baseURL = inputModel.baseURL ?? ''
+    const apiKey = inputModel.apiKey ?? ''
+    const key = `${baseURL}\n${apiKey}`
+    let provider = groups.get(key)
+
+    if (!provider) {
+      const providerId = inputModel._providerId && !usedProviderIds.has(inputModel._providerId)
+        ? inputModel._providerId
+        : crypto.randomUUID()
+      provider = {
+        id: providerId,
+        name: inputModel._providerName || baseURL || 'OpenAI Compatible Provider',
+        baseURL,
+        apiKey,
+        models: []
+      }
+      usedProviderIds.add(providerId)
+      groups.set(key, provider)
+    }
+
+    const {
+      baseURL: _baseURL,
+      apiKey: _apiKey,
+      _providerId,
+      _providerName,
+      _testing,
+      _testResult,
+      thinking,
+      ...model
+    } = inputModel
+
+    provider.models.push({
+      ...model,
+      thinking: normalizeThinkingConfig(thinking)
+    })
+  }
+
+  return Array.from(groups.values())
+}
+
 onMounted(async () => {
   try {
     const config = await ipcRenderer.invoke('boss-fetch-llm-config')
-    models.value = (config?.models ?? []).map((m: any) => ({
-      ...newModelEntry(),
-      ...m,
-      thinking: { enabled: false, budget: 2048, ...(m.thinking ?? {}) }
-    }))
+    models.value = flattenBossLlmModels(config)
     purposeDefaultModelId.value = config?.purposeDefaultModelId ?? {}
   } catch (err) {
     console.error('[BossLlmConfig] 加载配置失败', err)
@@ -306,7 +391,7 @@ async function handleSave() {
   isSaving.value = true
   try {
     const config = {
-      models: models.value.map(({ _testing, _testResult, ...rest }) => rest),
+      providers: modelsToProviders(models.value),
       purposeDefaultModelId: purposeDefaultModelId.value
     }
     await ipcRenderer.invoke('boss-save-llm-config', JSON.stringify(config))

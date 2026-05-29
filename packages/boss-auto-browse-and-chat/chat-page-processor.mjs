@@ -149,6 +149,7 @@ export async function screenCandidateWithLlm (resumeText, llmRule) {
         baseURL: client.baseURL,
         apiKey: client.apiKey,
         model: client.model,
+        thinking: client.thinking,
         max_tokens: 200
       },
       [

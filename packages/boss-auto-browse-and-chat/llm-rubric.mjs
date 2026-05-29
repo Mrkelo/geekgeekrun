@@ -151,6 +151,7 @@ ${dimensionsDesc}
         baseURL: client.baseURL,
         apiKey: client.apiKey,
         model: client.model,
+        thinking: client.thinking,
         max_tokens: 500,
         response_format: { type: 'json_object' }
       },
@@ -264,6 +265,7 @@ export async function generateRubricFromJd (sourceJd, options = {}) {
         baseURL: client.baseURL,
         apiKey: client.apiKey,
         model: client.model,
+        thinking: client.thinking,
         max_tokens: 2000,
         response_format: { type: 'json_object' }
       },
