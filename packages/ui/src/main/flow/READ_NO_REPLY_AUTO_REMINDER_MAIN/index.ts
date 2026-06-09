@@ -290,7 +290,8 @@ async function checkJobIsClosed() {
   return isJobClosed
 }
 
-async function getJobJdByEncryptJobId(encryptJobId?: string | null) {
+// Keep LLM JD lookup SQLite-only. Opening job details here can steal focus on macOS.
+async function getSqliteJobJdByEncryptJobId(encryptJobId?: string | null) {
   if (!encryptJobId) {
     return ''
   }
@@ -298,7 +299,7 @@ async function getJobJdByEncryptJobId(encryptJobId?: string | null) {
     const jobInfo = await getJobInfoRecord(await dbInitPromise, encryptJobId)
     return jobInfo?.description?.trim?.() ?? ''
   } catch (err) {
-    console.log(`get job JD failed: ${encryptJobId}`, err)
+    console.log(`get job JD from sqlite failed: ${encryptJobId}`, err)
     return ''
   }
 }
@@ -652,7 +653,7 @@ const mainLoop = async () => {
         } else {
           try {
             const textToSend = await getGptContent(messageList, {
-              jobJd: await getJobJdByEncryptJobId(currentEncryptJobId)
+              jobJd: await getSqliteJobJdByEncryptJobId(currentEncryptJobId)
             })
             await sendMessage(pageMapByName.boss!, textToSend)
             gtag('rnrr_llm_content_sent')
@@ -668,7 +669,7 @@ const mainLoop = async () => {
         if (rechatContentSource === RECHAT_CONTENT_SOURCE.GEMINI_WITH_CHAT_CONTEXT) {
           try {
             const textToSend = await getGptContent(messageList, {
-              jobJd: await getJobJdByEncryptJobId(currentEncryptJobId)
+              jobJd: await getSqliteJobJdByEncryptJobId(currentEncryptJobId)
             })
             await sendMessage(pageMapByName.boss!, textToSend)
             gtag('rnrr_llm_content_sent')

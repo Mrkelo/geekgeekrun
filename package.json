@@ -6,7 +6,8 @@
   "module": "./main/index.mjs",
   "type": "module",
   "scripts": {
-    "start": "node ./packages/run-core-of-geek-auto-start-chat-with-boss/daemon-main.mjs"
+    "start": "node ./packages/run-core-of-geek-auto-start-chat-with-boss/daemon-main.mjs",
+    "verify:read-no-reply-llm-jd": "node ./scripts/verify-read-no-reply-llm-jd-sqlite-only.mjs"
   },
   "author": "geekgeekrun",
   "license": "ISC",
